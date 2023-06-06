@@ -1,0 +1,70 @@
+#unfinished
+import math
+import numpy as np
+
+class Transformer:
+    def __init__(self, dModel, h):
+        self.dModel = dModel
+        self.h = h
+        self.dK = self.dModel // self.h
+        self.queryProjections = [np.random.randn(self.dModel, self.dK) for _ in range(self.h)]
+        self.keyProjections = [np.random.randn(self.dModel, self.dK) for _ in range(self.h)]
+        self.valueProjections = [np.random.randn(self.dModel, self.dK) for _ in range(self.h)]
+        self.linearLayerMatrix = np.random.randn(self.h*self.dK , dModel)
+    def softmax(self, arr):
+        softMax = np.exp(arr - np.max(arr))
+        return softMax / softMax.sum()
+
+    def attentionHead(self, query, keys, value):
+        return np.dot(self.softmax(np.dot(query, keys.T)/np.sqrt(self.dK)), value)
+    
+    def getPositionalEncoding(self, pos, dModel):
+        positionalEncoding = np.zeros(dModel)
+        for i in range(dModel):
+            div_term = np.exp(np.log(10000.0) * -(i // 2 * 2) / np.float(dModel))
+            if i % 2 == 0:
+                positionalEncoding[i] = np.sin(pos * div_term)
+            else: # i is odd
+                positionalEncoding[i] = np.cos(pos * div_term)
+        return positionalEncoding
+
+    def multiheadAttention(self, query, keys, values):
+        batch_size, seq_len, _ = query.shape
+        attentionResultArr = []
+        for i in range(self.h):
+            # Reshape the input arrays to 2D shape
+            query_2d = query.reshape(-1, self.dModel)
+            key_2d = keys.reshape(-1, self.dModel)
+            value_2d = values.reshape(-1, self.dModel)
+
+            queryTransformation = np.dot(query_2d, self.queryProjections[i])
+            keyTransformation = np.dot(key_2d, self.keyProjections[i])
+            valueTransformation = np.dot(value_2d, self.valueProjections[i])
+
+            headResult = self.attentionHead(queryTransformation, keyTransformation, valueTransformation)
+            attentionResultArr.append(headResult.reshape(-1, self.dK))
+
+        joinedVector = np.concatenate(attentionResultArr, axis=-1)
+
+        output = np.dot(joinedVector, self.linearLayerMatrix)
+
+        # Reshape the output to original input shape
+        output = output.reshape(batch_size, seq_len, -1)
+
+        return output
+
+   
+def testTransformer():
+    dModel = 512 
+    h =8
+    transformer = Transformer(dModel, h)
+    query = np.random.rand(1, 1, dModel)
+    key = np.random.randn(1, 1, dModel)
+    value = np.random.randn(1, 1, dModel)
+
+    output = transformer.multiheadAttention(query, key, value)
+
+    print(f"output dimensions: {output.shape}")
+    print(f"output: {output}")
+
+testTransformer()
