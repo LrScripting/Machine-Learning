@@ -1,9 +1,56 @@
-#unfinished
 import math
 import numpy as np
 
+from collections import Counter
+import re
+class Token:
+    def __init__(self):
+        self.tokenDictionary = None
+        self.unknownToken = "<UNK>"
+    
+    def buildTokenDict(self, text):
+        inputArr = re.sub(r'[^\w\s]', '', text.lower()).split(" ")
+        wordCount = Counter() 
+
+        for word in inputArr:
+            wordCount[word] +=1
+
+        sortedOutput = sorted(wordCount, key=wordCount.get, reverse=True)
+        print(sortedOutput)
+        print(wordCount)
+        self.tokenDictionary = {subseq: i for i , subseq in enumerate(sortedOutput)}
+        self.tokenDictionary[self.unknownToken] = len(self.tokenDictionary)
+        print(self.tokenDictionary)
+        
+    def tokenizer(self, inputVector):
+        if self.tokenDictionary == None:
+            raise Exception("please build tokenDict first")
+
+        inputV = re.sub(r'[^\w\s]', '', inputVector.lower()).split(" ")
+
+        tokenizedOutput = []
+        for word in inputV:
+            if word in self.tokenDictionary:
+                tokenizedOutput.append(self.tokenDictionary[word])
+            else:
+                tokenizedOutput.append(self.tokenDictionary[self.unknownToken])
+
+        return tokenizedOutput
+
+    def detokenize(self, tokenVector):
+        translatedVecor = []
+        if self.tokenDictionary is None:
+            raise Exception("No token Dictionary")
+        detokenDict = {i: word for word, i in self.tokenDictionary.items()}
+        translatedVecor = [detokenDict[word] for word in tokenVector]
+        return translatedVecor
+    
+
+
+
 class Transformer:
     def __init__(self, dModel, h):
+
         self.dModel = dModel
         self.h = h
         self.dK = self.dModel // self.h
@@ -11,23 +58,43 @@ class Transformer:
         self.keyProjections = [np.random.randn(self.dModel, self.dK) for _ in range(self.h)]
         self.valueProjections = [np.random.randn(self.dModel, self.dK) for _ in range(self.h)]
         self.linearLayerMatrix = np.random.randn(self.h*self.dK , dModel)
+
+        self.gamma = np.ones(self.dModel)
+        self.beta = np.zeros(dModel)
+        self.epislon = 1e-6
+
+
+        self.dFF = 2048
+        self.weightsOne = np.random.randn(self.dModel, self.dFF)
+        self.weightsTwo = np.random.randn(self.dFF, self.dModel)
+        self.biasOne = np.zeros(self.dFF)
+        self.biasTwo = np.zeros(self.dFF)
+
+        self.dropoutRate = 0.02
+
+        self.vocabSize = 284
+        self.finalWeights = np.random.randn(self.dModel, self.vocabSize)
+
     def softmax(self, arr):
         softMax = np.exp(arr - np.max(arr))
-        return softMax / softMax.sum()
+        return softMax / np.sum(softMax, axis=-1, keepdims=True)
 
     def attentionHead(self, query, keys, value):
         return np.dot(self.softmax(np.dot(query, keys.T)/np.sqrt(self.dK)), value)
     
-    def getPositionalEncoding(self, pos, dModel):
-        positionalEncoding = np.zeros(dModel)
-        for i in range(dModel):
-            div_term = np.exp(np.log(10000.0) * -(i // 2 * 2) / np.float(dModel))
-            if i % 2 == 0:
-                positionalEncoding[i] = np.sin(pos * div_term)
-            else: # i is odd
-                positionalEncoding[i] = np.cos(pos * div_term)
-        return positionalEncoding
-
+    def positionwiseEncoding(self, matrix, sentence):
+        encodedMatrix = np.zeros_like(matrix)
+        
+        for pos in range(len(sentence.split(" "))):
+            for i in range(0, self.dModel):
+                posCalculation = pos / np.power(10000, 2 * (i // 2) / np.float32(self.dModel))
+                
+                if i % 2 == 0:
+                    encodedMatrix[pos, i] = np.sin(posCalculation)
+                else:
+                    encodedMatrix[pos, i] = np.cos(posCalculation)
+                    
+        return encodedMatrix
     def multiheadAttention(self, query, keys, values):
         batch_size, seq_len, _ = query.shape
         attentionResultArr = []
@@ -52,8 +119,57 @@ class Transformer:
         output = output.reshape(batch_size, seq_len, -1)
 
         return output
+    # y = activation(dot_product(W, x) + b)
+    def feedforwardNetwork(self, input):
+        hiddenLayer = np.maximum(0, np.dot(input, self.weightsOne) + self.biasOne)
+        output = np.dot(hiddenLayer, self.weightsTwo) + self.biasTwo
+        return output
 
-   
+    def layerNormalisation(self, layerInput):
+        inputMean = np.mean(layerInput, axis=1, keepdims=True)
+        sDeviation = np.sqrt(np.var(layerInput, axis=-1, keepdims=True) + self.epislon)
+        xHat = (layerInput - inputMean) / sDeviation
+        normalisedOutput = self.gamma * xHat - self.beta
+        return normalisedOutput
+    
+
+    def residualConnection(self, inputLayer, layerFunction, training=True):
+        
+        output= self.dropout(layerFunction(inputLayer), training=training)
+        residualOutput = inputLayer + output
+        return residualOutput 
+
+    def encoder(self, input, training=True):
+        attentionLayerOutput = self.residualConnection(input, lambda x: self.multiheadAttention(x, x, x), training=training)
+        normalised = self.layerNormalisation(attentionLayerOutput)
+        feedforwardOutput = self.residualConnection(self.feedforwardNetwork(normalised), attentionLayerOutput, training=training)
+        return self.layerNormalisation(feedforwardOutput)
+
+    def decoder(self, input, encoderOutput, training=True):
+        attentionLayerOutput = self.residualConnection(input, lambda x: self.multiheadAttention(x, x, x), training=training)
+        normalised = self.layerNormalisation(attentionLayerOutput)
+        crossAttentionLayerOutput = self.residualConnection(normalised, lambda x: self.multiheadAttention(attentionLayerOutput, encoderOutput, encoderOutput), training=training)
+        normalised2 = self.layerNormalisation(crossAttentionLayerOutput)
+        feedForeWardOutput = self.residualConnection(normalised2, self.feedforwardNetwork(crossAttentionLayerOutput), training=training)
+        return self.layerNormalisation(feedForeWardOutput)
+    
+
+    def dropout(self, inputLayer, training=True):
+        if not training:
+            return inputLayer
+        mask = np.random.rand(inputLayer.shape[0], inputLayer.shape[1]) > self.dropoutRate
+        return mask * inputLayer / (1.0 -self.dropoutRate)
+    
+    def finalLayer(self, inputLayer):
+        output = np.dot(inputLayer, self.finalWeights)
+        return output
+    
+    def crossEntropyLoss(self, predictions, labels):
+        activated = self.softmax(predictions)
+        loss = -sum(labels * np.log(activated + 1e-9), axis=1)
+        return loss
+
+    
 def testTransformer():
     dModel = 512 
     h =8
